@@ -1,0 +1,19 @@
+# Archivos de configuración sensibles
+.env
+credentials.json
+*.json
+
+# Dependencias
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos temporales
+*.tmp
+*.temp
