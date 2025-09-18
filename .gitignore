@@ -6,6 +6,9 @@ credentials.json
 # Dependencias
 node_modules/
 
+# Imágenes subidas por usuarios
+images/
+
 # Logs
 *.log
 npm-debug.log*

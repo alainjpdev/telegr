@@ -1,10 +1,19 @@
 const { Telegraf } = require('telegraf');
 const OpenAI = require('openai');
 const { google } = require('googleapis');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 class TelegramAIAgent {
   constructor() {
+    // Verificar si hay token de Telegram
+    if (!process.env.TELEGRAM_BOT_TOKEN) {
+      console.log('⚠️  TELEGRAM_BOT_TOKEN no configurado. El bot no se iniciará.');
+      console.log('💡 Para usar el bot, configura TELEGRAM_BOT_TOKEN en tu archivo .env');
+      return;
+    }
+    
     // Inicializar el bot de Telegram
     this.bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
     
@@ -31,38 +40,35 @@ class TelegramAIAgent {
     this.memory = [];
     this.maxMemorySize = 10; // Mantener solo las últimas 10 conversaciones
     
+    // Configurar carpeta de imágenes
+    this.imagesPath = path.join(__dirname, 'images');
+    this.ensureImagesDirectory();
+    
     this.setupBot();
+  }
+
+  ensureImagesDirectory() {
+    if (!fs.existsSync(this.imagesPath)) {
+      fs.mkdirSync(this.imagesPath, { recursive: true });
+      console.log('📁 Carpeta de imágenes creada:', this.imagesPath);
+    }
   }
 
   setupBot() {
     // Configurar el trigger de mensajes (equivalente al Telegram Trigger del JSON)
     this.bot.on('message', async (ctx) => {
       try {
-        const userMessage = ctx.message.text;
         const userId = ctx.from.id;
         const userName = ctx.from.first_name || 'Usuario';
         
-        console.log(`📨 Mensaje recibido de ${userName} (${userId}): ${userMessage}`);
-        
-        // Guardar mensaje en Google Sheets
-        try {
-          await this.saveMessageToSheet(userId, userMessage);
-        } catch (sheetError) {
-          console.error('Error guardando en Google Sheets:', sheetError);
-          // Continuar aunque falle el guardado
+        // Manejar diferentes tipos de mensajes
+        if (ctx.message.photo) {
+          await this.handleImageMessage(ctx, userId, userName);
+        } else if (ctx.message.text) {
+          await this.handleTextMessage(ctx, userId, userName);
+        } else {
+          await ctx.reply('Lo siento, solo puedo procesar texto e imágenes por ahora.');
         }
-        
-        // Procesar con el agente AI (deshabilitado temporalmente)
-        let response;
-        try {
-          response = await this.processWithAIAgent(userMessage, userId);
-        } catch (aiError) {
-          console.error('Error con IA:', aiError.message);
-          response = `Hola ${userName}! Recibí tu mensaje: "${userMessage}"\n\n🤖 (IA temporalmente deshabilitada - configurando API key)`;
-        }
-        
-        // Enviar respuesta (equivalente al "Send a text message" del JSON)
-        await ctx.reply(response);
         
       } catch (error) {
         console.error('Error procesando mensaje:', error);
@@ -86,14 +92,18 @@ Comandos disponibles:
 /clear - Limpiar memoria del agente
 /sheets - Ver mensajes guardados en Google Sheets
 /stats - Ver estadísticas del bot
+/images - Ver imágenes guardadas
+/sendimage - Enviar una imagen guardada
 
 Puedo ayudarte con:
 • Consultas generales usando IA
 • Acceso a datos de Google Sheets
 • Mantener contexto de nuestra conversación
 • Guardar todos los mensajes automáticamente
+• Procesar y guardar imágenes
 
-💾 *Todos los mensajes se guardan automáticamente en Google Sheets*
+💾 *Todos los mensajes e imágenes se guardan automáticamente*
+📸 *Envía una imagen para que la procese y guarde*
       `, { parse_mode: 'Markdown' });
     });
 
@@ -139,6 +149,118 @@ Puedo ayudarte con:
         ctx.reply('Error obteniendo estadísticas.');
       }
     });
+
+    // Comando para listar imágenes
+    this.bot.command('images', async (ctx) => {
+      try {
+        const images = fs.readdirSync(this.imagesPath).filter(file => 
+          file.match(/\.(jpg|jpeg|png|gif)$/i)
+        );
+        
+        if (images.length === 0) {
+          await ctx.reply('📸 No hay imágenes guardadas aún.\n\nEnvía una imagen para que la guarde!');
+          return;
+        }
+        
+        let message = `📸 *Imágenes guardadas (${images.length}):*\n\n`;
+        images.slice(0, 10).forEach((image, index) => {
+          message += `${index + 1}. ${image}\n`;
+        });
+        
+        if (images.length > 10) {
+          message += `\n... y ${images.length - 10} más`;
+        }
+        
+        await ctx.reply(message, { parse_mode: 'Markdown' });
+        
+      } catch (error) {
+        console.error('Error listando imágenes:', error);
+        await ctx.reply('Error obteniendo lista de imágenes.');
+      }
+    });
+
+    // Comando para enviar una imagen específica
+    this.bot.command('sendimage', async (ctx) => {
+      try {
+        const images = fs.readdirSync(this.imagesPath).filter(file => 
+          file.match(/\.(jpg|jpeg|png|gif)$/i)
+        );
+        
+        if (images.length === 0) {
+          await ctx.reply('📸 No hay imágenes disponibles para enviar.');
+          return;
+        }
+        
+        // Enviar la primera imagen disponible
+        const imagePath = path.join(this.imagesPath, images[0]);
+        
+        await ctx.replyWithPhoto(
+          { source: imagePath },
+          {
+            caption: `📸 Imagen desde el servidor: ${images[0]}\n\n¡Esta imagen está guardada en el bot!`
+          }
+        );
+        
+        console.log(`✅ Imagen enviada: ${images[0]}`);
+        
+      } catch (error) {
+        console.error('Error enviando imagen:', error);
+        await ctx.reply('Error enviando la imagen.');
+      }
+    });
+  }
+
+  async handleTextMessage(ctx, userId, userName) {
+    const userMessage = ctx.message.text;
+    
+    console.log(`📨 Mensaje de texto recibido de ${userName} (${userId}): ${userMessage}`);
+    
+    // Guardar mensaje en Google Sheets
+    try {
+      await this.saveMessageToSheet(userId, `TEXTO: ${userMessage}`);
+    } catch (sheetError) {
+      console.error('Error guardando en Google Sheets:', sheetError);
+    }
+    
+    // Procesar con el agente AI
+    let response;
+    try {
+      response = await this.processWithAIAgent(userMessage, userId);
+    } catch (aiError) {
+      console.error('Error con IA:', aiError.message);
+      response = `Hola ${userName}! Recibí tu mensaje: "${userMessage}"\n\n🤖 (IA temporalmente deshabilitada - configurando API key)`;
+    }
+    
+    await ctx.reply(response);
+  }
+
+  async handleImageMessage(ctx, userId, userName) {
+    console.log(`📸 Imagen recibida de ${userName} (${userId})`);
+    
+    try {
+      // Obtener la imagen de mayor calidad
+      const photo = ctx.message.photo[ctx.message.photo.length - 1];
+      const fileId = photo.file_id;
+      
+      // Descargar la imagen
+      const fileLink = await ctx.telegram.getFileLink(fileId);
+      const imagePath = path.join(this.imagesPath, `${userId}_${Date.now()}.jpg`);
+      
+      // Guardar información de la imagen en Google Sheets
+      await this.saveMessageToSheet(userId, `IMAGEN: ${fileId} - ${imagePath}`);
+      
+      // Responder al usuario
+      await ctx.reply(`📸 ¡Imagen recibida! La he guardado en mi sistema.\n\n` +
+                     `📁 Archivo: ${path.basename(imagePath)}\n` +
+                     `🆔 File ID: ${fileId}\n\n` +
+                     `¿Hay algo específico que quieras que haga con esta imagen?`);
+      
+      console.log(`✅ Imagen guardada: ${imagePath}`);
+      
+    } catch (error) {
+      console.error('Error procesando imagen:', error);
+      await ctx.reply('Lo siento, hubo un error al procesar tu imagen.');
+    }
   }
 
   async processWithAIAgent(message, userId) {
@@ -271,6 +393,14 @@ Responde de manera útil y profesional. Si necesitas usar Google Sheets, mencion
   }
 
   async start() {
+    // Verificar si el bot fue inicializado
+    if (!this.bot) {
+      console.log('❌ No se puede iniciar el bot sin TELEGRAM_BOT_TOKEN');
+      console.log('📝 El proyecto está configurado pero el bot de Telegram no está activo');
+      console.log('🔧 Para activar el bot, agrega TELEGRAM_BOT_TOKEN a tu archivo .env');
+      return;
+    }
+    
     try {
       console.log('Iniciando bot de Telegram...');
       await this.bot.launch();
